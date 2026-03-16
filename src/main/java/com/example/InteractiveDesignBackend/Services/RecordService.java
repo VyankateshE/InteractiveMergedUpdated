@@ -244,224 +244,319 @@ public class RecordService {
 
 	    return pdfPaths;
 	}
-	// ---------------------- SERVICE IMPLEMENTATION ----------------------
+	
+	
 	public List<String> processAndGeneratePdf(String payloadJson, MultipartFile[] files, MultipartFile htmlFile)
-			throws IOException {
+        throws IOException {
 
-		Date startTime = new Date();
-		ObjectMapper mapper = new ObjectMapper();
-		JsonNode payloadNode = mapper.readTree(payloadJson);
+    Date startTime = new Date();
+    ObjectMapper mapper = new ObjectMapper();
 
-		JsonNode mappingNode;
-		String pageSize = "A4";
-		String orientation = "portrait";
+    JsonNode payloadNode;
 
-		if (payloadNode.isArray()) {
-			mappingNode = payloadNode;
-		} else if (payloadNode.has("mapping")) {
-			mappingNode = payloadNode.get("mapping");
-			if (payloadNode.has("pageSize"))
-				pageSize = payloadNode.get("pageSize").asText();
-			if (payloadNode.has("orientation"))
-				orientation = payloadNode.get("orientation").asText();
-		} else {
-			throw new IllegalArgumentException("Invalid payload format. Must contain 'mapping' or be an array.");
-		}
+    if (payloadJson == null || payloadJson.trim().isEmpty() || payloadJson.equals("[]")) {
+        payloadNode = mapper.createArrayNode();
+    } else {
+        payloadNode = mapper.readTree(payloadJson);
+    }
 
-		Map<String, JsonNode> htmlIdToJsonField = new LinkedHashMap<>();
-		for (JsonNode obj : mappingNode) {
-			obj.fields().forEachRemaining(entry -> htmlIdToJsonField.put(entry.getKey(), entry.getValue()));
-		}
+    JsonNode mappingNode;
+    String pageSize = "A4";
+    String orientation = "portrait";
 
-		List<String> fileNameFields = new ArrayList<>();
-		JsonNode fileNameNode = htmlIdToJsonField.get("file_name");
-		if (fileNameNode != null) {
-			if (fileNameNode.isTextual())
-				fileNameFields.addAll(Arrays.asList(fileNameNode.asText().split(",")));
-			else if (fileNameNode.isArray())
-				fileNameNode.forEach(n -> fileNameFields.add(n.asText()));
-		}
+    if (payloadNode.isArray()) {
+        mappingNode = payloadNode;
+    } else if (payloadNode.has("mapping")) {
+        mappingNode = payloadNode.get("mapping");
 
-		List<String> passwordFields = new ArrayList<>();
-		JsonNode passwordNode = htmlIdToJsonField.get("password");
-		if (passwordNode != null) {
-			if (passwordNode.isTextual())
-				passwordFields.addAll(Arrays.asList(passwordNode.asText().split(",")));
-			else if (passwordNode.isArray())
-				passwordNode.forEach(n -> passwordFields.add(n.asText()));
-		}
+        if (payloadNode.has("pageSize"))
+            pageSize = payloadNode.get("pageSize").asText();
 
-		String htmlContent = new String(htmlFile.getBytes(), StandardCharsets.UTF_8).replaceFirst("^\uFEFF", "");
+        if (payloadNode.has("orientation"))
+            orientation = payloadNode.get("orientation").asText();
+    } else {
+        throw new IllegalArgumentException("Invalid payload format.");
+    }
 
-		String outputDir = Mypath.getPath() + "DownloadHTMLANDPDF" + File.separator;
-		Files.createDirectories(Path.of(outputDir));
-		List<String> pdfPaths = new ArrayList<>();
+    Map<String, JsonNode> htmlIdToJsonField = new LinkedHashMap<>();
 
-		RestTemplate restTemplate = new RestTemplate();
+    for (JsonNode obj : mappingNode) {
+        obj.fields().forEachRemaining(entry ->
+                htmlIdToJsonField.put(entry.getKey(), entry.getValue()));
+    }
 
-		for (MultipartFile file : files) {
-			JsonNode dataJson = mapper.readTree(file.getInputStream());
-			boolean anyMatchFound = false;
+    List<String> fileNameFields = new ArrayList<>();
+    JsonNode fileNameNode = htmlIdToJsonField.get("file_name");
 
-			for (Iterator<Map.Entry<String, JsonNode>> users = dataJson.fields(); users.hasNext();) {
-				Map.Entry<String, JsonNode> entry = users.next();
-				JsonNode userNode = entry.getValue();
+    if (fileNameNode != null) {
 
-				for (JsonNode nodeRef : htmlIdToJsonField.values()) {
-					if (nodeRef.isTextual()) {
-						String refField = nodeRef.asText();
-						String cleanField = refField.contains(".") ? refField.split("\\.")[1] : refField;
-						if (userNode.has(cleanField)) {
-							anyMatchFound = true;
-							break;
-						}
-					}
-				}
-				if (anyMatchFound)
-					break;
-			}
+        if (fileNameNode.isTextual())
+            fileNameFields.addAll(Arrays.asList(fileNameNode.asText().split(",")));
 
-			if (!anyMatchFound) {
-				System.out.println(
-						"⚠️ Skipping JSON file '" + file.getOriginalFilename() + "' — no matching data found.");
-				logService.logActivity("SKIPPED",
-						"Skipped JSON file '" + file.getOriginalFilename() + "' — no matching data found.", startTime);
-				continue;
-			}
+        else if (fileNameNode.isArray())
+            fileNameNode.forEach(n -> fileNameFields.add(n.asText()));
+    }
 
-			for (Iterator<Map.Entry<String, JsonNode>> users = dataJson.fields(); users.hasNext();) {
-				Map.Entry<String, JsonNode> entry = users.next();
-				String userKey = entry.getKey();
-				JsonNode userNode = entry.getValue();
+    List<String> passwordFields = new ArrayList<>();
+    JsonNode passwordNode = htmlIdToJsonField.get("password");
 
-				Map<String, JsonNode> normalizedFieldMap = new HashMap<>();
-				normalizedFieldMap.put(userKey.toLowerCase(), userNode);
-				userNode.fieldNames()
-						.forEachRemaining(field -> normalizedFieldMap.put(field.toLowerCase(), userNode.get(field)));
+    if (passwordNode != null) {
 
-				Document doc = Jsoup.parse(htmlContent);
-				doc.outputSettings().syntax(Document.OutputSettings.Syntax.xml);
+        if (passwordNode.isTextual())
+            passwordFields.addAll(Arrays.asList(passwordNode.asText().split(",")));
 
-				htmlIdToJsonField.forEach((id, nodeRef) -> {
-					String fieldRef = nodeRef.isTextual() ? nodeRef.asText() : null;
-					if (fieldRef == null)
-						return;
-					String fullPath = fieldRef;
-					if (!fieldRef.startsWith(userKey + ".")) {
-						fullPath = userKey + "." + fieldRef;
-					}
+        else if (passwordNode.isArray())
+            passwordNode.forEach(n -> passwordFields.add(n.asText()));
+    }
 
-					String value = resolveFieldValueWithIndexes(normalizedFieldMap, fullPath.trim());
-					Element elem = doc.getElementById(id);
-					if (elem != null && value != null && !value.isEmpty()) {
-						elem.text(value);
-					}
-				});
+    String htmlContent = new String(htmlFile.getBytes(), StandardCharsets.UTF_8)
+            .replaceFirst("^\uFEFF", "");
 
-				String fileType;
-				if (!fileNameFields.isEmpty()) {
-					StringBuilder fnBuilder = new StringBuilder();
-					for (String fnExpr : fileNameFields) {
-						String fnValue = resolveFieldValueWithIndexes(normalizedFieldMap,
-								userKey + "." + fnExpr.trim());
-						if (fnValue != null && !fnValue.isEmpty())
-							fnBuilder.append(fnValue);
-						else
-							fnBuilder.append("file_").append(UUID.randomUUID()).append("_");
-					}
-					fileType = fnBuilder.toString().replaceAll("_$", "");
-				} else {
-					fileType = "file_" + userKey + "_" + UUID.randomUUID();
-				}
+    Document templateDoc = Jsoup.parse(htmlContent);
 
-				String pdfFileName = outputDir + fileType + ".pdf";
+    String outputDir = Mypath.getPath() + "DownloadHTMLANDPDF" + File.separator;
+    Files.createDirectories(Path.of(outputDir));
 
-				try {
-					HttpHeaders headers = new HttpHeaders();
-					headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+    List<String> pdfPaths = new ArrayList<>();
 
-					MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-					body.add("file", new ByteArrayResource(doc.outerHtml().getBytes(StandardCharsets.UTF_8)) {
-						@Override
-						public String getFilename() {
-							return "template.html";
-						}
-					});
-					body.add("name", fileType);
+    RestTemplate restTemplate = new RestTemplate();
 
-					Map<String, Object> pdfConfig = new HashMap<>();
-					pdfConfig.put("pageSize", pageSize);
-					pdfConfig.put("orientation", orientation);
-					body.add("payload", mapper.writeValueAsString(pdfConfig));
+    for (MultipartFile file : files) {
 
-					HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
-					String apiUrl = "http://192.168.0.188:3010/api/v1/s3Upload/uploadHTML5";
-//					String apiUrl = "http://api.ariantechsolutions.in/interactive-server/api/v1/s3Upload/uploadHTML5";
+        if (file == null || file.isEmpty())
+            continue;
 
-					ResponseEntity<byte[]> response = restTemplate.exchange(apiUrl, HttpMethod.POST, requestEntity,
-							byte[].class);
-				    if (response.getBody() == null || response.getBody().length == 0) {
+        JsonNode dataJson = mapper.readTree(file.getInputStream());
 
-				        logService.logActivity(
-				                "FAILURE",
-					            "Error while calling remote API",
-				                new Date()
-				        );
+        boolean anyMatchFound = htmlIdToJsonField.isEmpty();
 
-				        throw new IOException("Error API returned no PDF for " + fileType);
-				    }
+        if (!anyMatchFound) {
 
-				    Files.write(Path.of(pdfFileName), response.getBody());
+            for (Iterator<Map.Entry<String, JsonNode>> users = dataJson.fields(); users.hasNext();) {
 
-				}catch (Exception ex) {
+                Map.Entry<String, JsonNode> entry = users.next();
+                JsonNode userNode = entry.getValue();
 
-				    logService.logActivity(
-				            "ERROR",
-			                "Error while calling remote API: " + ex.getMessage(),
-				            new Date()
-				    );
+                for (JsonNode nodeRef : htmlIdToJsonField.values()) {
 
-			        throw new IOException("Error API call failed");
-				}
+                    if (nodeRef.isTextual()) {
 
-				if (!passwordFields.isEmpty()) {
-					StringBuilder pwBuilder = new StringBuilder();
-					for (String pwExpr : passwordFields) {
-						String pwValue = resolveFieldValueWithIndexes(normalizedFieldMap,
-								userKey + "." + pwExpr.trim());
-						pwBuilder.append(pwValue != null ? pwValue : pwExpr.trim());
-					}
-					String userPassword = pwBuilder.toString();
+                        String refField = nodeRef.asText();
 
-					System.out.println("---------------------------------------------------");
-					System.out.println("Generated PDF for user: " + userKey);
-					System.out.println("File Name: " + pdfFileName);
-					System.out.println("Password:  " + userPassword);
-					System.out.println("Page Size: " + pageSize);
-					System.out.println("Orientation: " + orientation);
-					System.out.println("---------------------------------------------------");
+                        String cleanField = refField.contains(".")
+                                ? refField.split("\\.")[1]
+                                : refField;
 
-					try (PDDocument document = PDDocument.load(new File(pdfFileName))) {
-						String ownerPassword = UUID.randomUUID().toString();
-						AccessPermission permissions = new AccessPermission();
-						StandardProtectionPolicy policy = new StandardProtectionPolicy(ownerPassword, userPassword,
-								permissions);
-						policy.setEncryptionKeyLength(128);
-						policy.setPermissions(permissions);
-						document.protect(policy);
-						document.save(pdfFileName);
-					}
-				}
+                        if (userNode.has(cleanField)) {
+                            anyMatchFound = true;
+                            break;
+                        }
+                    }
+                }
 
-				RecordEntity record = RecordEntity.builder().fileName(fileType + ".pdf").build();
-				repository.save(record);
-				pdfPaths.add(pdfFileName);
-			}
-		}
+                if (anyMatchFound)
+                    break;
+            }
+        }
 
-		return pdfPaths;
-	}
+        if (!anyMatchFound && !htmlIdToJsonField.isEmpty()) {
 
+            logService.logActivity(
+                    "SKIPPED",
+                    "Skipped JSON file '" + file.getOriginalFilename() + "' — no matching data found.",
+                    startTime
+            );
+
+            continue;
+        }
+
+        for (Iterator<Map.Entry<String, JsonNode>> users = dataJson.fields(); users.hasNext();) {
+
+            Map.Entry<String, JsonNode> entry = users.next();
+
+            String userKey = entry.getKey();
+            JsonNode userNode = entry.getValue();
+
+            Map<String, JsonNode> normalizedFieldMap = new HashMap<>();
+
+            normalizedFieldMap.put(userKey.toLowerCase(), userNode);
+
+            userNode.fieldNames().forEachRemaining(field ->
+                    normalizedFieldMap.put(field.toLowerCase(), userNode.get(field)));
+
+            Document doc = templateDoc.clone();
+            doc.outputSettings().syntax(Document.OutputSettings.Syntax.xml);
+
+            htmlIdToJsonField.forEach((id, nodeRef) -> {
+
+                String fieldRef = nodeRef.isTextual() ? nodeRef.asText() : null;
+
+                if (fieldRef == null)
+                    return;
+
+                String fullPath = fieldRef;
+
+                if (!fieldRef.startsWith(userKey + ".")) {
+                    fullPath = userKey + "." + fieldRef;
+                }
+
+                String value = resolveFieldValueWithIndexes(
+                        normalizedFieldMap,
+                        fullPath.trim()
+                );
+
+                Element elem = doc.getElementById(id);
+
+                if (elem != null && value != null && !value.isEmpty()) {
+                    elem.text(value);
+                }
+            });
+
+            String fileType;
+
+            if (!fileNameFields.isEmpty()) {
+
+                StringBuilder fnBuilder = new StringBuilder();
+
+                for (String fnExpr : fileNameFields) {
+
+                    String fnValue = resolveFieldValueWithIndexes(
+                            normalizedFieldMap,
+                            userKey + "." + fnExpr.trim()
+                    );
+
+                    if (fnValue != null && !fnValue.isEmpty())
+                        fnBuilder.append(fnValue);
+
+                    else
+                        fnBuilder.append("file_")
+                                .append(UUID.randomUUID())
+                                .append("_");
+                }
+
+                fileType = fnBuilder.toString().replaceAll("_$", "");
+
+            } else {
+
+                fileType = "file_" + userKey + "_" + System.currentTimeMillis();
+            }
+
+            String pdfFileName = outputDir + fileType + ".pdf";
+
+            try {
+
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+                MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+
+                body.add("file", new ByteArrayResource(
+                        doc.outerHtml().getBytes(StandardCharsets.UTF_8)) {
+
+                    @Override
+                    public String getFilename() {
+                        return "template.html";
+                    }
+                });
+
+                body.add("name", fileType);
+
+                Map<String, Object> pdfConfig = new HashMap<>();
+                pdfConfig.put("pageSize", pageSize);
+                pdfConfig.put("orientation", orientation);
+
+                body.add("payload", mapper.writeValueAsString(pdfConfig));
+
+                HttpEntity<MultiValueMap<String, Object>> requestEntity =
+                        new HttpEntity<>(body, headers);
+
+                String apiUrl =
+                        "http://192.168.0.188:3010/api/v1/s3Upload/uploadHTML5";
+
+                ResponseEntity<byte[]> response = restTemplate.exchange(
+                        apiUrl,
+                        HttpMethod.POST,
+                        requestEntity,
+                        byte[].class
+                );
+
+                if (response.getBody() == null || response.getBody().length == 0) {
+
+                    logService.logActivity(
+                            "FAILURE",
+                            "Remote API returned empty PDF for " + fileType,
+                            startTime
+                    );
+
+                    throw new IOException("API returned empty PDF");
+                }
+
+                Files.write(Path.of(pdfFileName), response.getBody());
+
+            } catch (Exception ex) {
+
+                logService.logActivity(
+                        "ERROR",
+                        "Error while calling remote API: " + ex.getMessage(),
+                        startTime
+                );
+
+                throw new IOException("Remote API call failed: " + ex.getMessage());
+            }
+
+            if (!passwordFields.isEmpty()) {
+
+                StringBuilder pwBuilder = new StringBuilder();
+
+                for (String pwExpr : passwordFields) {
+
+                    String pwValue = resolveFieldValueWithIndexes(
+                            normalizedFieldMap,
+                            userKey + "." + pwExpr.trim()
+                    );
+
+                    pwBuilder.append(
+                            pwValue != null ? pwValue : pwExpr.trim()
+                    );
+                }
+
+                String userPassword = pwBuilder.toString();
+
+                try (PDDocument document = PDDocument.load(new File(pdfFileName))) {
+
+                    String ownerPassword = UUID.randomUUID().toString();
+
+                    AccessPermission permissions = new AccessPermission();
+
+                    StandardProtectionPolicy policy =
+                            new StandardProtectionPolicy(
+                                    ownerPassword,
+                                    userPassword,
+                                    permissions
+                            );
+
+                    policy.setEncryptionKeyLength(128);
+                    policy.setPermissions(permissions);
+
+                    document.protect(policy);
+                    document.save(pdfFileName);
+                }
+            }
+
+            RecordEntity record = RecordEntity.builder()
+                    .fileName(fileType + ".pdf")
+                    .build();
+
+            repository.save(record);
+
+            pdfPaths.add(pdfFileName);
+        }
+    }
+
+    return pdfPaths;
+}
+	
+	
 	private String resolveFieldValueWithIndexes(Map<String, JsonNode> normalizedFieldMap, String expression) {
 		if (expression == null || expression.isEmpty())
 			return null;
@@ -789,3 +884,233 @@ public class RecordService {
 	}
 
 }
+
+
+
+
+//uploadPdf
+
+
+// ---------------------- SERVICE IMPLEMENTATION ----------------------
+//public List<String> processAndGeneratePdf(String payloadJson, MultipartFile[] files, MultipartFile htmlFile)
+//		throws IOException {
+//
+//	Date startTime = new Date();
+//	ObjectMapper mapper = new ObjectMapper();
+//	JsonNode payloadNode = mapper.readTree(payloadJson);
+//
+//	JsonNode mappingNode;
+//	String pageSize = "A4";
+//	String orientation = "portrait";
+//
+//	if (payloadNode.isArray()) {
+//		mappingNode = payloadNode;
+//	} else if (payloadNode.has("mapping")) {
+//		mappingNode = payloadNode.get("mapping");
+//		if (payloadNode.has("pageSize"))
+//			pageSize = payloadNode.get("pageSize").asText();
+//		if (payloadNode.has("orientation"))
+//			orientation = payloadNode.get("orientation").asText();
+//	} else {
+//		throw new IllegalArgumentException("Invalid payload format. Must contain 'mapping' or be an array.");
+//	}
+//
+//	Map<String, JsonNode> htmlIdToJsonField = new LinkedHashMap<>();
+//	for (JsonNode obj : mappingNode) {
+//		obj.fields().forEachRemaining(entry -> htmlIdToJsonField.put(entry.getKey(), entry.getValue()));
+//	}
+//
+//	List<String> fileNameFields = new ArrayList<>();
+//	JsonNode fileNameNode = htmlIdToJsonField.get("file_name");
+//	if (fileNameNode != null) {
+//		if (fileNameNode.isTextual())
+//			fileNameFields.addAll(Arrays.asList(fileNameNode.asText().split(",")));
+//		else if (fileNameNode.isArray())
+//			fileNameNode.forEach(n -> fileNameFields.add(n.asText()));
+//	}
+//
+//	List<String> passwordFields = new ArrayList<>();
+//	JsonNode passwordNode = htmlIdToJsonField.get("password");
+//	if (passwordNode != null) {
+//		if (passwordNode.isTextual())
+//			passwordFields.addAll(Arrays.asList(passwordNode.asText().split(",")));
+//		else if (passwordNode.isArray())
+//			passwordNode.forEach(n -> passwordFields.add(n.asText()));
+//	}
+//
+//	String htmlContent = new String(htmlFile.getBytes(), StandardCharsets.UTF_8).replaceFirst("^\uFEFF", "");
+//
+//	String outputDir = Mypath.getPath() + "DownloadHTMLANDPDF" + File.separator;
+//	Files.createDirectories(Path.of(outputDir));
+//	List<String> pdfPaths = new ArrayList<>();
+//
+//	RestTemplate restTemplate = new RestTemplate();
+//
+//	for (MultipartFile file : files) {
+//		JsonNode dataJson = mapper.readTree(file.getInputStream());
+//		boolean anyMatchFound = false;
+//
+//		for (Iterator<Map.Entry<String, JsonNode>> users = dataJson.fields(); users.hasNext();) {
+//			Map.Entry<String, JsonNode> entry = users.next();
+//			JsonNode userNode = entry.getValue();
+//
+//			for (JsonNode nodeRef : htmlIdToJsonField.values()) {
+//				if (nodeRef.isTextual()) {
+//					String refField = nodeRef.asText();
+//					String cleanField = refField.contains(".") ? refField.split("\\.")[1] : refField;
+//					if (userNode.has(cleanField)) {
+//						anyMatchFound = true;
+//						break;
+//					}
+//				}
+//			}
+//			if (anyMatchFound)
+//				break;
+//		}
+//
+//		if (!anyMatchFound) {
+//			System.out.println(
+//					"⚠️ Skipping JSON file '" + file.getOriginalFilename() + "' — no matching data found.");
+//			logService.logActivity("SKIPPED",
+//					"Skipped JSON file '" + file.getOriginalFilename() + "' — no matching data found.", startTime);
+//			continue;
+//		}
+//
+//		for (Iterator<Map.Entry<String, JsonNode>> users = dataJson.fields(); users.hasNext();) {
+//			Map.Entry<String, JsonNode> entry = users.next();
+//			String userKey = entry.getKey();
+//			JsonNode userNode = entry.getValue();
+//
+//			Map<String, JsonNode> normalizedFieldMap = new HashMap<>();
+//			normalizedFieldMap.put(userKey.toLowerCase(), userNode);
+//			userNode.fieldNames()
+//					.forEachRemaining(field -> normalizedFieldMap.put(field.toLowerCase(), userNode.get(field)));
+//
+//			Document doc = Jsoup.parse(htmlContent);
+//			doc.outputSettings().syntax(Document.OutputSettings.Syntax.xml);
+//
+//			htmlIdToJsonField.forEach((id, nodeRef) -> {
+//				String fieldRef = nodeRef.isTextual() ? nodeRef.asText() : null;
+//				if (fieldRef == null)
+//					return;
+//				String fullPath = fieldRef;
+//				if (!fieldRef.startsWith(userKey + ".")) {
+//					fullPath = userKey + "." + fieldRef;
+//				}
+//
+//				String value = resolveFieldValueWithIndexes(normalizedFieldMap, fullPath.trim());
+//				Element elem = doc.getElementById(id);
+//				if (elem != null && value != null && !value.isEmpty()) {
+//					elem.text(value);
+//				}
+//			});
+//
+//			String fileType;
+//			if (!fileNameFields.isEmpty()) {
+//				StringBuilder fnBuilder = new StringBuilder();
+//				for (String fnExpr : fileNameFields) {
+//					String fnValue = resolveFieldValueWithIndexes(normalizedFieldMap,
+//							userKey + "." + fnExpr.trim());
+//					if (fnValue != null && !fnValue.isEmpty())
+//						fnBuilder.append(fnValue);
+//					else
+//						fnBuilder.append("file_").append(UUID.randomUUID()).append("_");
+//				}
+//				fileType = fnBuilder.toString().replaceAll("_$", "");
+//			} else {
+//				fileType = "file_" + userKey + "_" + UUID.randomUUID();
+//			}
+//
+//			String pdfFileName = outputDir + fileType + ".pdf";
+//
+//			try {
+//				HttpHeaders headers = new HttpHeaders();
+//				headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+//
+//				MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+//				body.add("file", new ByteArrayResource(doc.outerHtml().getBytes(StandardCharsets.UTF_8)) {
+//					@Override
+//					public String getFilename() {
+//						return "template.html";
+//					}
+//				});
+//				body.add("name", fileType);
+//
+//				Map<String, Object> pdfConfig = new HashMap<>();
+//				pdfConfig.put("pageSize", pageSize);
+//				pdfConfig.put("orientation", orientation);
+//				body.add("payload", mapper.writeValueAsString(pdfConfig));
+//
+//				HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
+//				String apiUrl = "http://192.168.0.188:3010/api/v1/s3Upload/uploadHTML5";
+////				String apiUrl = "http://api.ariantechsolutions.in/interactive-server/api/v1/s3Upload/uploadHTML5";
+//
+//				ResponseEntity<byte[]> response = restTemplate.exchange(apiUrl, HttpMethod.POST, requestEntity,
+//						byte[].class);
+//			    if (response.getBody() == null || response.getBody().length == 0) {
+//
+//			        logService.logActivity(
+//			                "FAILURE",
+//				            "Error while calling remote API",
+//			                new Date()
+//			        );
+//
+//			        throw new IOException("Error API returned no PDF for " + fileType);
+//			    }
+//
+//			    Files.write(Path.of(pdfFileName), response.getBody());
+//
+//			}catch (Exception ex) {
+//
+//			    logService.logActivity(
+//			            "ERROR",
+//		                "Error while calling remote API: " + ex.getMessage(),
+//			            new Date()
+//			    );
+//
+//		        throw new IOException("Error API call failed");
+//			}
+//
+//			if (!passwordFields.isEmpty()) {
+//				StringBuilder pwBuilder = new StringBuilder();
+//				for (String pwExpr : passwordFields) {
+//					String pwValue = resolveFieldValueWithIndexes(normalizedFieldMap,
+//							userKey + "." + pwExpr.trim());
+//					pwBuilder.append(pwValue != null ? pwValue : pwExpr.trim());
+//				}
+//				String userPassword = pwBuilder.toString();
+//
+//				System.out.println("---------------------------------------------------");
+//				System.out.println("Generated PDF for user: " + userKey);
+//				System.out.println("File Name: " + pdfFileName);
+//				System.out.println("Password:  " + userPassword);
+//				System.out.println("Page Size: " + pageSize);
+//				System.out.println("Orientation: " + orientation);
+//				System.out.println("---------------------------------------------------");
+//
+//				try (PDDocument document = PDDocument.load(new File(pdfFileName))) {
+//					String ownerPassword = UUID.randomUUID().toString();
+//					AccessPermission permissions = new AccessPermission();
+//					StandardProtectionPolicy policy = new StandardProtectionPolicy(ownerPassword, userPassword,
+//							permissions);
+//					policy.setEncryptionKeyLength(128);
+//					policy.setPermissions(permissions);
+//					document.protect(policy);
+//					document.save(pdfFileName);
+//				}
+//			}
+//
+//			RecordEntity record = RecordEntity.builder().fileName(fileType + ".pdf").build();
+//			repository.save(record);
+//			pdfPaths.add(pdfFileName);
+//		}
+//	}
+//
+//	return pdfPaths;
+//}
+//
+
+
+
+
+
